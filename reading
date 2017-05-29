@@ -1,0 +1,115 @@
+% 正在装Latex先用文本替换
+
+%%%%%%%%%%%%%%%%%%python
+两个函数funA(arg)和funB()
+@funA
+funB()
+等价于funA(funB())
+
+某个目录下建一个__init__.py表示该目录是一个Package
+
+numpy中的-1，shape(xxx, [-1])表示自己也不知道多少维，让他自己算
+%%%%%%%%%%%%%%%%%%python
+
+%%%%%%%%%%%%%%%%%%tensorflow
+with tf.Grapg().as_default():
+as_default返回一个context manager表示Graph为默认的Graph，如果想要创建多张图需要使用这个，如果不指定默认创建了一个global的graph，所有的op都被加到这个graph中了
+
+tf.sequence_mask
+返回一个mask，例如tf.sequcne_mask([1, 3, 2],2)返回的就是[[True, False][True, True],[True, True]]
+'RNN模型需要使用initial event sequence初始化?'
+%%%%%%%%%%%%%%%%%%tensorflow
+
+
+
+melody rnn model--->events_rnn_model.EventSequenceRnnModel-->BaseModel
+
+\\BaseModel:
+是一个abstract类
+abstract方法：（使用annotation添加__isabstractmethod__属性实现抽象类）
+_build_graph_for_generation
+
+其他方法：
+initialize_with_checkpoint(self, checkpoint_file)
+使用_build_graph_for_generation返回的graph从checkpoint_file中恢复
+initialize_with_checkpoint_and_metagraph(self, checkpoint_filename,metagraph_filename)
+metagraph存储的还有整张图，tf.train.import_meta_graph(metagraph_filename)会增加节点到现在的图中，存储的metadata大概时my-model-10000.meta这种格式的。
+write_checkpoint_with_metagraph(self, checkpoint_filename)
+存储参数和metaData
+close(self)
+关闭session，清空session
+
+
+\\EventSequenceRnnModel（这个只用于支持产生event sequences和note sequences）
+_build_graph_for_generation(self)
+调用events_rnn_graph.build_graph('generate', self._config)生成图
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+build_graph(mode, config, sequence_example_file_paths=None)：
+mode有'train'、'eval'、'generate'三种模式，config设定encoder以及HParams
+sequance_example_file_paths用于tf.train.SequenceExample序列花数据并写入tfrecord文件
+
+创建图的时候：
+with tf.Graph().as_default() as graph:
+
+\如果是train或者eval模式，则会通过
+get_padded_batch(file_list, batch_size, input_size，num_enqueuing_threads=4)
+获取inputs（[batch_size, num_steps, input_size],float32）、
+labels（[batch_size, num_steps], int64）、
+lengths([batch_size], int32)。
+%其中batch_size是一个batch包含的SequenceExamples数量，num_steps是SequenceExamples步数，input_size是输入的向量
+%length是没有padding时的batch大小
+file_list是存储TFRecord文件的地址，读取文件使用tf.train.string_input_producer生成先入先出的队列，文件阅读器（rf.TextLineReader）使用这个队列读取数据，详情见http://blog.csdn.net/u010223750/article/details/70482498
+使用tf.PaddingFIFOQueue，这个可以包含动态形状的组建，也支持dequeue_many(即将n个元素出列然后拼接)，即支持并发写入和读取。
+queue = tf.PaddingFIFOQueue(capacity=1000,dtypes=[tf.float32, tf.int64, tf.int32],shapes=[(None, input_size), (None,), ()])
+表示有三种类型，三种类型的shape分别是括号中的，shape可以设置为None
+%%%%整个的使用技巧是创建QueueRunner多线程读取数据，获取batchsize个inputsize的输入数据
+
+\如果是generate模式
+inputs则是tf.placeholder  [hparams.batch_size, None, input_size]格式的
+
+
+整个网络使用DropoutWrapper的多层LSTM（MultiRNNCell实现），可以定义attn_length，然后使用该length作为输入长度（AttentionCellWrapper实现）
+%%%attention在深度学习中的作用：
+%%%在RNN中有基于编码-解码的序列到序列架构，输入和输出的长度可以彼此不同，但是最好的是输入输出是边长
+%%注意力机制本质上是加权平均，先读取前后的数据，然后存储器读取输出的特征，之后不用相同的顺序检索，也不用访问全部，然后利用存储器顺序地执行，将执行的数据ht-1, ht, ht+1进行加权后得到上下文。注意力是一个窗口，attention会调整输出的注意力，进而得到最重要的部分
+%RNN网络的输出为[batch_size, max_time, output_size]
+reshape 为[batch_size * max_time, output_size]后使用tf.contrib.layers.linear全连接层转为
+logits_flat = tf.contrib.layers.linear(outputs_flat, num_classes)，就是说成了一个[batch_size * max_time, num_classes]的tensor
+
+'如果是generate模式'
+增加temperature输入。然后得到softmax： softmax_flat = tf.nn.softmax(tf.div(logits_flat, tf.fill([num_classes], temperature)))
+fill的作用为将[num_classes填充为temperature。
+然后reshape为softmax = tf.reshape(softmax_flat, [hparams.batch_size, -1, num_classes])
+将'inputs'、'initial_state'、'final_state'、'temperature'、'softmax'放入collection中
+
+'如果是train或者eval模式'
+labels转为一维的数组reshape(labels, [-1])
+对lengths提取sequence_mask（就是batch_size）后主转1D
+softmax_cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels_flat, logits=logits_flat)求交叉熵
+这个就是对Logits进行softmax求概率后再结合one-hot的labels得到交叉熵，即衡量预测数据和真是数据的相似性
+
+%tf中mask的作用：
+%因为tf不能创建能够动态改变长度的图，因此改用mask实现
+%这个是因为输入的tensor必须要大小固定才行，在计算loss时只取没有padding的部分
+%这个实现是为了速度的考量
+
+%%%%%%%%%%%%%%%%%%%%%%%
+\\events_rnn_model
+_generate_step_for_batch
+该方法改变event_sequences（长度和batch_size一致）
+_beam_search(self, events, num_steps, temperature, beam_size,
+                   branch_factor, steps_per_iteration, control_events=None,
+                   modify_events_callback=None)
+最终要的函数，用于产生序列。默认beam_size=1, branch_factor=1
+每个Interatioin会产生具有最大likelihood的序列，beam中的每个sequence会有branch_factor个event sequence，总共会有beam_size * branch_factor个active event sequence在branching操作和pruning操作之间.
+%%%%_beam_search的流程
+event_sequences即为beam_size个events
+
+
+\\\melody_rnn_model
+输入：num_steps表示最终生成的melody的长度、primer_melody、通过temperature可以控制softmax的随机度！！！！（大于1则越随机，小于1则越有规律）、branch_factor和beam_size、steps_per_iteration（通过beam search产生melody的参数）
+'RNN模型需要使用initial event sequence初始化?'
+
+
+

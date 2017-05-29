@@ -22,7 +22,7 @@ import time
 import tensorflow as tf
 import magenta
 
-from magenta.models.melody_rnn import melody_rnn_config_flags
+from magenta.models.melody_rnn import melody_rnnmelody_rnn_model_config_flags
 from magenta.models.melody_rnn import melody_rnn_model
 from magenta.models.melody_rnn import melody_rnn_sequence_generator
 from magenta.protobuf import generator_pb2
