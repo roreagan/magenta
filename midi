@@ -1,0 +1,30 @@
+midi文件所有的事件是相对时间，tick数是在前一个tick后面的
+resolution：一个四分音符的Pulse
+tempo：每分钟四分音符的数目，tempo是Allegro这种形容的，是可以变的，但是resolution是固定的
+每个midi文件都编码了原始的Resolution和Tempo，可以使用这些设置sequence timer。可以通过tempo change event改变tempo，但是不能改变resolution。Tempo被设置为us/beat，120BPM就是 60*1000000/120=500000us/beat。
+midi中也有Time Signature，就是4/4, 3/4这种
+key signature是C大调这种
+
+magenta处理Time Signature的方式：
+对于primerMidi的处理方式：（在midi_io.py中）
+1. 选择qpm
+2. primer melody成为magenta.music.Melody events values的list，例如[60, -2, 60, -2, 67, -2, 67, -2]
+或者使用midi文件，对于midi文件的处理在magenta.music.midi_file_to_sequence_proto中实现
+获取resolution, 然后使用PRETTY_MIDI的parser以及MIDI的encoding_type获取sequence
+midi中的time_signature和key_signature、tempo以及出现的时间
+然后添加note、bend（理解为吉他的推弦）、control_change（理解为钢琴的踏板）的时间、参数等记录下来
+这些就是网络的输入
+
+seconds_per_step = 60.0 / qpm / generator.steps_per_quarter
+total_seconds = FLAGS.num_steps * seconds_per_step这是总共产生音乐的时间
+
+然后quantize序列的note和annotations的时间
+然后extracted_melodies产生单音的序列
+extracted_melodies, _ = mm.extract_melodies(
+        quantized_sequence, search_start_step=input_start_step, min_bars=0,
+        min_unique_pitches=1, gap_bars=float('inf'),
+        ignore_polyphonic_notes=True)
+其中gap_bars是每两个音符之间至少的间隔，然后音乐至少有min_bars和min_unique_pitches
+对于除了鼓的每一种乐器，notes按照顺序，去除鼓的声音，然后添加note(开始和结束的时间）
+
+然后只选取一种乐器产生的melody进行generate_melody

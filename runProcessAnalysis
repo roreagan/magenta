@@ -1,0 +1,83 @@
+melody_rnn_model开始：
+
+MelodyRnnConfig init：
+DEFAULT_MIN(MAX)_NOTE定义了最低和最高的音符48-84(midi是0-128，transpose to key应该是记录调的)
+
+/***********
+***********MelodyRnnModel
+**********/
+初始化则是config
+self._config.hparams.dropout_keep_prob = 1.0
+self._config.hparams.batch_size = 1
+
+MelodyRnnModel.generate_melody
+产生的时候还包含原本的音乐，num_steps必须大于primer_melody
+先将melody转换为需要的范围以及音调(默认C大调，48-84之间)，通过melodies_lib.py中的squash（之后还会转回来）
+
+melody = self._generate_events(num_steps, melody, temperature, beam_size, branch_factor, steps_per_iteration)
+开始使用melody产生音乐
+
+/***********
+***********events_rnn_melody
+**********/
+events = self._beam_search(events, num_steps - len(events), temperature,
+                                 beam_size（Df1）, branch_factor（Df1）, steps_per_iteration（Df1）,
+                                 control_events（DfNone）, modify_events_callback（DfNone）)
+开始产生音乐，每个Interation将beam prune产生最高可能的beam_size的sequences。branch_factor是根据每个sequence(prune产生的)
+
+将最开始的melody(这里是events)复制beam_size份。
+/********RNN特性**************/
+first_iteration_num_steps保证之后产生的都是steps_per_iteration 
+最初的inputs就是整个的melody，inputs经过处理后要么是一整首要么是一个音符
+初始化整个网络session.run(graph_initial_state)，通过np.tile复制(beam_size,1)份
+
+
+event_sequences, final_state, loglik = self._generate_branches(
+        event_sequences, loglik/**beam_size zeros**/, branch_factor, first_iteration_num_steps,
+        inputs, initial_state, temperature)
+branch generation。该方法对于每个event sequence产生branch_factor个branch，每个branch都将原本的event_sequence扩展num_steps
+
+event_sequences, inputs, initial_state, loglik都复制branch_factor份。
+然后使用_generate_step产生单步的音符：
+all_final_state, all_step_loglik = self._generate_step(
+          all_event_sequences, all_inputs, all_final_state, temperature)
+
+batch_final_state, batch_loglik = self._generate_step_for_batch(
+          [event_sequences[i] for i in batch_indices],//一整个batch的event_sequences
+          [inputs[i] for i in batch_indices], //一整个batch的inputs
+          initial_state[batch_indices, :],
+          temperature)
+该函数通过将一个batch的event_sequence都扩展一个step
+final_state, softmax = self._session.run(
+        [graph_final_state, graph_softmax], feed_dict)
+在extend_event_sequences中，对于softmax结果的处理是用的np.random.choice(num_classes, p=softmax[i][-1])进行的
+然后整个batch的batch_final_state和batch_loglik都是求得的
+/**********如果有len(event_seuqences长度小于batch_size)，则将event_sequences[-1]和inputs[-1]重复
+最后返回final_state和loglik
+
+在%%_generate_branches%%一直使用all_final_state循环，产生多个step
+
+以上这些都只是产生开头的几个step，是使用整首歌产生一个多的音符
+然后_prune_branches
+event_sequences, final_state, loglik = self._prune_branches(
+          event_sequences, final_state, loglik, k=beam_size)
+因为本来有beam_size * beam_factor个，剪枝为只有beam_size个
+之后每次训练只添加一个event
+event_sequences, final_state, loglik = self._generate_branches(
+          event_sequences, loglik, branch_factor, steps_per_iteration, inputs（sequence的最后一个event）,
+          final_state, temperature)
+最后剪枝只留一个，就是最终的melody
+
+
+/***********
+***********MelodyRnnTrain
+**********/
+这个很简单直接跳过
+
+
+/***********
+***********MelodyRnnGenerate
+**********/
+
+
+
